@@ -1,0 +1,66 @@
+/* Copyright 2020 The FedLearner Authors. All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+syntax = "proto3";
+import "google/protobuf/any.proto";
+import "fedlearner/common/common.proto";
+
+package fedlearner.common.bridge;
+
+
+message ConnectRequest {
+  string app_id = 1;
+  uint32 worker_rank = 2;
+  string identifier = 3;
+}
+
+message ConnectResponse {
+  string app_id = 1;
+  uint32 worker_rank = 2;
+  int64 timestamp = 3;
+}
+
+message HeartbeatRequest {
+}
+
+message HeartbeatResponse {
+  string app_id = 1;
+  uint32 worker_rank = 2;
+}
+
+message TerminateRequest {
+}
+
+message TerminateResponse {
+  int64 timestamp = 1;
+}
+
+message BridgeRequest {
+  uint64 seq_num = 1;
+  google.protobuf.Any payload = 2;
+};
+
+message BridgeResponse {
+  Status status = 1;
+  uint64 next_seq_num = 2;
+};
+
+service BridgeService {
+  rpc Transmit (BridgeRequest) returns (BridgeResponse) {}
+  rpc StreamTransmit (stream BridgeRequest) returns (stream BridgeResponse) {}
+  rpc Connect (ConnectRequest) returns (ConnectResponse) {}
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse) {}
+  rpc Terminate (TerminateRequest) returns (TerminateResponse) {}
+}
