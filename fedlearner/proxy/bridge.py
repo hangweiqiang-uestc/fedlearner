@@ -31,7 +31,8 @@ from fedlearner.common import metrics
 from fedlearner.proxy.channel import make_insecure_channel, ChannelType
 
 
-def make_ready_client(channel, stop_event=None):
+def make_ready_client(channel, stop_event=None,
+                      client_fn=bridge_grpc.BridgeServiceStub):
     channel_ready = grpc.channel_ready_future(channel)
     wait_secs = 0.5
     start_time = time.time()
@@ -47,7 +48,39 @@ def make_ready_client(channel, stop_event=None):
                 wait_secs *= 1.2
         except Exception as e:  # pylint: disable=broad-except
             logging.warning('Waiting channel ready: %s', repr(e))
-    return bridge_grpc.BridgeServiceStub(channel)
+    return client_fn(channel)
+
+
+class BridgeClientManager:
+    def __init__(self, client_fn, channel_fn):
+        self._client_fn = client_fn
+        self._channel_fn = channel_fn
+        self._channel = channel_fn()
+        self._client = client_fn()
+
+    def rpc_with_retry(self, sender, err_log):
+        while True:
+            with self._client_lock:
+                try:
+                    return sender()
+                except Exception as e:  # pylint: disable=broad-except
+                    logging.warning(
+                        "%s: %s. Retry in 1s...", err_log, repr(e))
+                    metrics.emit_counter('reconnect_counter', 1)
+                    self._channel.close()
+                    time.sleep(1)
+                    self._channel = self._channel_fn()
+                    self._client = make_ready_client(self._channel,
+                                                     client_fn=self._client_fn)
+
+    def __getattr__(self, item):
+        return getattr(self._client, item)
+
+    def __getstate__(self):
+        return self.__dict__
+
+    def __setstate__(self, state):
+        self.__dict__ = state
 
 
 class _MessageQueue(object):
@@ -154,7 +187,7 @@ class Bridge(object):
         self._peer_identifier = ''
 
         # data transmit
-        self._condition = threading.Condition()
+        self._transmit_condition = threading.Condition()
         self._next_iter_id = 0
 
         # grpc client
@@ -164,27 +197,31 @@ class Bridge(object):
             ('grpc.max_send_message_length', 2 ** 31 - 1),
             ('grpc.max_receive_message_length', 2 ** 31 - 1)
         ]
-        self._channel = make_insecure_channel(
-            remote_address, ChannelType.REMOTE,
-            options=self._grpc_options, compression=self._compression)
-        self._client = bridge_grpc.BridgeServiceStub(self._channel)
+        self._client = BridgeClientManager(
+            bridge_grpc.BridgeServiceStub,
+            lambda: make_insecure_channel(
+                remote_address, ChannelType.REMOTE,
+                options=self._grpc_options, compression=self._compression
+            )
+        )
         self._next_send_seq_num = int(role.lower() == 'leader')
         self._transmit_queue = _MessageQueue()
         self._client_daemon = None
         self._client_daemon_shutdown_fn = None
 
         # server
-        self._transmit_receive_lock = threading.Condition()
+        self._transmit_receive_lock = threading.Lock()
         self._next_receive_seq_num = int(role.lower() == 'follower')
-        self._received_queue = collections.deque()
-        self._received_queue_size = 1 << 16
+        self._receive_buffer = collections.deque()
+        self._receive_buffer_size = 1 << 16
 
         self._server = grpc.server(
             futures.ThreadPoolExecutor(max_workers=10),
             options=self._grpc_options,
             compression=self._compression)
         bridge_grpc.add_BridgeServiceServicer_to_server(
-            Bridge.BridgeServicer(self), self._server)
+            Bridge.BridgeServicer(self), self._server
+        )
         self._server.add_insecure_port('[::]:%d' % listen_port)
 
     def __del__(self):
@@ -217,15 +254,16 @@ class Bridge(object):
         msg = bridge_pb.ConnectRequest(app_id=self._app_id,
                                        worker_rank=self._rank,
                                        identifier=self._identifier)
-        resp = self._rpc_with_retry(lambda: self._client.Connect(msg),
-                                    "Bridge failed to connect")
+        resp = self._client.rpc_with_retry(
+            lambda: self._client.Connect(msg), "Bridge failed to connect"
+        )
         logging.debug('Bridge now connected to peer.')
 
         # Ensure REQ from peer
-        with self._condition:
+        with self._transmit_condition:
             self._connected_at = max(self._connected_at, resp.timestamp)
             while not self._connected:
-                self._condition.wait()
+                self._transmit_condition.wait()
         logging.debug('Connect requested from peer.')
 
         if self._streaming_mode:
@@ -242,7 +280,6 @@ class Bridge(object):
         with self._transmit_send_lock:
             msg.seq_num = self._next_send_seq_num
             self._next_send_seq_num += 2
-
             if self._streaming_mode:
                 self._transmit_queue.put(msg)
                 return
@@ -251,16 +288,10 @@ class Bridge(object):
                 rsp = self._client.Transmit(msg)
                 assert rsp.status.code == common_pb.STATUS_SUCCESS, \
                     "Transmit error with code %d." % rsp.status.code
+            self._client.rpc_with_retry(sender, "Bridge transmit failed")
 
-            self._rpc_with_retry(sender, "Bridge transmit failed")
-
-    def get(self, timeout=None):
-        with self._transmit_receive_lock:
-            while len(self._received_queue) == 0:
-                self._transmit_receive_lock.wait(timeout)
-            res = self._received_queue.popleft()
-            self._transmit_receive_lock.notifyAll()
-            return res
+    def get(self, *args):
+        raise NotImplementedError
 
     def terminate(self, forced=False):
         if not self._connected or self._terminated:
@@ -276,37 +307,20 @@ class Bridge(object):
                 'Error during streaming shutdown: %s', repr(e))
 
         # Get ACK from peer
-        resp = self._rpc_with_retry(
+        resp = self._client.rpc_with_retry(
             lambda: self._client.Terminate(bridge_pb.TerminateRequest()),
-            "Failed to send terminate message.")
+            "Failed to send terminate message."
+        )
         logging.debug('Waiting for peer to terminate.')
 
         # Ensure REQ from peer
-        with self._condition:
+        with self._transmit_condition:
             self._terminated_at = max(self._terminated_at, resp.timestamp)
             while not self._peer_terminated:
-                self._condition.wait()
+                self._transmit_condition.wait()
 
         self._server.stop(None)
         logging.debug("Bridge connection terminated.")
-
-    def _rpc_with_retry(self, sender, err_log):
-        while True:
-            with self._client_lock:
-                try:
-                    return sender()
-                except Exception as e:  # pylint: disable=broad-except
-                    logging.warning(
-                        "%s: %s. Retry in 1s...", err_log, repr(e))
-                    metrics.emit_counter('reconnect_counter', 1)
-                    self._channel.close()
-                    time.sleep(1)
-                    self._channel = make_insecure_channel(
-                        self._remote_address, ChannelType.REMOTE,
-                        options=self._grpc_options,
-                        compression=self._compression)
-                    self._client = make_ready_client(self._channel)
-                    self._check_remote_heartbeat(self._client)
 
     def _connect_handler(self, request):
         assert request.app_id == self._app_id, \
@@ -318,7 +332,7 @@ class Bridge(object):
         assert len(request.identifier) > 0, \
             "Connection failed. An identifier should be offered!"
 
-        with self._condition:
+        with self._transmit_condition:
             if self._connected:
                 # If a duplicated reqeust from peer, just ignore it.
                 # If a new connect request from peer, suicide.
@@ -330,7 +344,7 @@ class Bridge(object):
                 self._peer_identifier = request.identifier
                 self._connected = True
                 self._connected_at = max(self._connected_at, int(time.time()))
-                self._condition.notifyAll()
+                self._transmit_condition.notifyAll()
 
         return bridge_pb.ConnectResponse(app_id=self._app_id,
                                          worker_rank=self._rank,
@@ -362,19 +376,25 @@ class Bridge(object):
 
             # request.seq_num == self._next_receive_seq_num
             self._next_receive_seq_num += 2
-            while len(self._received_queue) >= self._received_queue_size:
-                self._transmit_receive_lock.wait()
-            self._received_queue.append(request)
-            self._transmit_receive_lock.notifyAll()
-
+            self._receive_data_arranger(request)
             return bridge_pb.BridgeResponse(
                 next_seq_num=self._next_receive_seq_num)
 
+    def _receive_data_arranger(self, request):
+        """
+        Args:
+            request: BridgeRequest from peer.
+
+        Can be overridden to arrange receive data differently. Please not that
+            self.get() should also be overridden accordingly.
+        """
+        raise NotImplementedError
+
     def _terminate_handler(self, request):
-        with self._condition:
+        with self._transmit_condition:
             self._peer_terminated = True
             self._terminated_at = max(self._terminated_at, int(time.time()))
-            self._condition.notifyAll()
+            self._transmit_condition.notifyAll()
         return bridge_pb.TerminateResponse(timestamp=self._terminated_at)
 
     @staticmethod
