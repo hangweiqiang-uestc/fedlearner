@@ -56,7 +56,7 @@ class BridgeClientManager:
         self._client_fn = client_fn
         self._channel_fn = channel_fn
         self._channel = channel_fn()
-        self._client = client_fn()
+        self._client = client_fn(self._channel)
 
     def rpc_with_retry(self, sender, err_log):
         while True:
@@ -409,6 +409,9 @@ class Bridge(object):
             return False
 
     def _client_daemon_fn(self):
+        """
+        Daemon function that routinely sends messages in the MessageQueue.
+        """
         stop_event = threading.Event()
         generator = None
         channel = make_insecure_channel(
