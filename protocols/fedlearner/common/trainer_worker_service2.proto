@@ -32,11 +32,6 @@ message DataMessage {
   google.protobuf.Any any_data = 4;
 };
 
-message TrainerWorkerMessage {
-  uint64 seq_num = 1;
-  DataMessage data = 5;
-};
-
 service TrainerWorkerService {
   rpc LoadDataBlock (LoadDataBlockRequest) returns (Status) {}
 }

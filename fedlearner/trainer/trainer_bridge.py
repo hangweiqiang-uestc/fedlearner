@@ -135,17 +135,17 @@ class TrainerBridge(Bridge):
     def send_proto(self, iter_id, name, proto):
         any_proto = google.protobuf.any_pb2.Any()
         any_proto.Pack(proto)
-        msg = tws2_pb.TrainerWorkerMessage(
-            data=tws2_pb.DataMessage(iter_id=iter_id, name=name,
-                                     any_data=any_proto)
+        msg = tws2_pb.DataMessage(
+            iter_id=iter_id, name=name, any_data=any_proto
         )
         self.transmit(msg)
         logging.debug('Data: send protobuf %s for iter %d. seq_num=%d.',
                       name, iter_id, msg.seq_num)
 
     def send(self, iter_id, name, x):
-        msg = tws2_pb.TrainerWorkerMessage(data=tws2_pb.DataMessage(
-            iter_id=iter_id, name=name, tensor=tf.make_tensor_proto(x)))
+        msg = tws2_pb.DataMessage(
+            iter_id=iter_id, name=name, tensor=tf.make_tensor_proto(x)
+        )
         self.transmit(msg)
         logging.debug('Data: send %s for iter %d. seq_num=%d.',
                       name, iter_id, msg.seq_num)
@@ -162,8 +162,8 @@ class TrainerBridge(Bridge):
         logging.debug('Data: Waiting to receive proto %s for iter %d.',
                       name, iter_id)
         with self._transmit_condition:
-            while iter_id not in self._receive_buffer \
-                    or name not in self._receive_buffer[iter_id]:
+            while (iter_id not in self._receive_buffer
+                   or name not in self._receive_buffer[iter_id]):
                 self._transmit_condition.wait()
             data = self._receive_buffer[iter_id][name]
         logging.debug('Data: received %s for iter %d.', name, iter_id)
@@ -174,8 +174,8 @@ class TrainerBridge(Bridge):
                       iter_id)
         start_time = time.time()
         with self._transmit_condition:
-            while iter_id not in self._receive_buffer \
-                    or name not in self._receive_buffer[iter_id]:
+            while (iter_id not in self._receive_buffer
+                   or name not in self._receive_buffer[iter_id]):
                 self._transmit_condition.wait()
             data = self._receive_buffer[iter_id][name]
         duration = time.time() - start_time
