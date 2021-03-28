@@ -16,6 +16,7 @@
 import math
 from fedlearner.model.crypto.fixed_point_number import FixedPointNumber
 from fedlearner.model.crypto.paillier import PaillierEncryptedNumber
+from fedlearner.model.tree.timer import timer
 
 # reserve some bits to avoid the result of hess
 # addition overflow to the result of grad
@@ -46,6 +47,7 @@ class GradHessPacker:
         self._n = 1 << bit_length
         self.max_int = self._n // 2 - 1
 
+    @timer('pack_grad_hess')
     def pack_grad_hess(self, grad, hess):
         """Pack Grad and Hess into Plaintext
         Args:

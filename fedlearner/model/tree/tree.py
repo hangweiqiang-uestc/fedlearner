@@ -438,6 +438,7 @@ class BaseGrower(object):
             split_info.left_weight = - lr * left_g/(left_h + lam)
             split_info.right_weight = - lr * right_g/(right_h + lam)
 
+    @timer('_find_split_and_push')
     def _find_split_and_push(self, node):
         assert len(self._is_cat_feature) == len(node.grad_hists)
 
@@ -1285,6 +1286,7 @@ class BoostingTreeEnsamble(object):
         fout.write(','.join([str(i) for i in pred]) + '\n')
         fout.close()
 
+    @timer('fit')
     def fit(self,
             features,
             labels=None,
