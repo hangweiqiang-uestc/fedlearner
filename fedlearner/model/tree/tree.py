@@ -31,6 +31,7 @@ from fedlearner.model.crypto import paillier, fixed_point_number
 from fedlearner.common import tree_model_pb2 as tree_pb2
 from fedlearner.common import common_pb2
 
+from fedlearner.model.tree.timer import timer
 
 BST_TYPE = np.float32
 PRECISION = 1e38
@@ -71,6 +72,7 @@ def _from_ciphertext(public_key, ciphertext):
             public_key, int.from_bytes(i, 'little'), EXPONENT)
         for i in ciphertext]
 
+@timer('_encrypt_and_send_numbers')
 def _encrypt_and_send_numbers(bridge, name, public_key, numbers):
     num_parts = (len(numbers) + MAX_PARTITION_SIZE - 1)//MAX_PARTITION_SIZE
     bridge.send_proto(
@@ -91,6 +93,7 @@ def _raw_encrypt_numbers(args):
     ]
     return part_id, ciphertext
 
+@timer('_raw_encrypt_and_send_numbers')
 def _raw_encrypt_and_send_numbers(bridge, name, public_key, numbers, pool=None):
     num_parts = (len(numbers) + MAX_PARTITION_SIZE - 1) // MAX_PARTITION_SIZE
     bridge.send_proto('%s_partition_info' % name,
@@ -118,6 +121,7 @@ def _raw_encrypt_and_send_numbers(bridge, name, public_key, numbers, pool=None):
             msg.ciphertext.extend(ciphertext)
             bridge.send_proto('%s_part_%d' % (name, part_id), msg)
 
+@timer('_receive_encrypted_numbers')
 def _receive_encrypted_numbers(bridge, name, public_key):
     part_info = tree_pb2.PartitionInfo()
     bridge.receive_proto('%s_partition_info'%name).Unpack(part_info)
@@ -204,6 +208,7 @@ class HistogramBuilder(object):
         self._num_parallel = num_parallel
         self._pool = pool
 
+    @timer('compute_histogram')
     def compute_histogram(self, values, sample_ids):
         if not self._pool:
             hists = _compute_histogram_helper(
@@ -644,6 +649,7 @@ class LeaderGrower(BaseGrower):
     def _initialize_feature_importance(self):
         self._feature_importance = np.zeros(len(self._nodes[0].grad_hists))
 
+    @timer('_receive_and_decrypt_histogram')
     def _receive_and_decrypt_histogram(self, name):
         msg = tree_pb2.Histograms()
         self._bridge.receive_proto(name).Unpack(msg)
@@ -661,6 +667,7 @@ class LeaderGrower(BaseGrower):
         hists = self._pool.map(_decrypt_histogram_helper, args)
         return sum(hists, [])
 
+    @timer('_receive_and_decrypt_packed_histogram')
     def _receive_and_decrypt_packed_histogram(self, name):
         msg = tree_pb2.Histograms()
         self._bridge.receive_proto(name).Unpack(msg)
