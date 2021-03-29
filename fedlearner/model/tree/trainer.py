@@ -546,4 +546,7 @@ def run(args):
 
 
 if __name__ == '__main__':
+    from fedlearner.model.tree.timer import total_time
     run(create_argument_parser().parse_args())
+    for k, v in total_time.items():
+        logging.info('operation %s costs %s', k, v)
