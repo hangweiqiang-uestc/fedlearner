@@ -15,6 +15,7 @@
 # coding: utf-8
 """LevelDB"""
 
+
 import leveldb
 
 def encode(k):
